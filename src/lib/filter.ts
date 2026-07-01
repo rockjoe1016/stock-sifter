@@ -211,6 +211,17 @@ function checkStep6(minuteData: MinuteData[]): FilterStepResult {
   };
 }
 
+// ---------- 暴露内部函数供其他模块使用 ----------
+
+export {
+  checkStep1,
+  checkStep2,
+  checkStep3,
+  checkStep4,
+  checkStep5,
+  checkStep6,
+};
+
 // ---------- 主筛选函数 ----------
 
 /**

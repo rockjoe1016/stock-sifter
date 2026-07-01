@@ -72,22 +72,38 @@ export default function Home() {
     }
   }, []);
 
-  const handleAnalyze = useCallback(async (code: string) => {
-    setAnalyzingCode(code);
+  const handleAnalyze = useCallback(async (stock: StockResult) => {
+    setAnalyzingCode(stock.code);
     try {
-      const res = await fetch("/api/analyze", {
+      const res = await fetch("/api/detail", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code }),
+        body: JSON.stringify({
+          code: stock.code,
+          name: stock.name,
+          price: stock.price,
+          changePercent: stock.changePercent,
+          turnoverRate: stock.turnoverRate,
+          volumeRatio: stock.volumeRatio,
+          marketCap: stock.marketCapYi,
+        }),
       });
       const json = await res.json();
       if (json.success && data) {
+        // 更新该股票的 steps
+        const updateStocks = (list: StockResult[]) =>
+          list.map(s => s.code === stock.code
+            ? { ...s, steps: json.steps, allPassed: json.allPassed }
+            : s
+          );
+
         setData({
           ...data,
-          aiAnalyses: {
-            ...data.aiAnalyses,
-            [code]: json.analysis,
-          },
+          passedStocks: updateStocks(data.passedStocks),
+          partialStocks: updateStocks(data.partialStocks),
+          aiAnalyses: json.analysis
+            ? { ...data.aiAnalyses, [stock.code]: json.analysis }
+            : data.aiAnalyses,
         });
       }
     } catch {
@@ -222,7 +238,7 @@ export default function Home() {
                     key={stock.code}
                     stock={stock}
                     analysis={data.aiAnalyses[stock.code]}
-                    onAnalyze={() => handleAnalyze(stock.code)}
+                    onAnalyze={() => handleAnalyze(stock)}
                     analyzing={analyzingCode === stock.code}
                   />
                 ))}

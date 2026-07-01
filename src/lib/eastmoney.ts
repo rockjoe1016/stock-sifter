@@ -50,7 +50,25 @@ export interface MinuteData {
  * 东方财富 push2 接口，返回所有 A 股（沪深）
  * 需要分页获取，每页最多 100 条
  */
+/**
+ * 获取全A股实时行情列表
+ * 优先从东方财富拉取（数据全），如果失败则回退到腾讯 qt 接口（海外可访问）
+ */
 export async function getAllStocks(): Promise<StockInfo[]> {
+  try {
+    const result = await getAllStocksFromEastMoney();
+    if (result.length > 100) {
+      return result;
+    }
+  } catch {
+    // 继续走备用源
+  }
+
+  // 备用：腾讯 qt.gtimg.cn 接口（海外可访问，无 Referer 限制）
+  return await getAllStocksFromTencent();
+}
+
+async function getAllStocksFromEastMoney(): Promise<StockInfo[]> {
   const fields = [
     "f12",  // 代码
     "f14",  // 名称
@@ -86,6 +104,7 @@ export async function getAllStocks(): Promise<StockInfo[]> {
         "Referer": "https://quote.eastmoney.com/",
       },
       cache: "no-store",
+      signal: AbortSignal.timeout(5000),
     });
 
     if (!res.ok) {
@@ -132,6 +151,96 @@ export async function getAllStocks(): Promise<StockInfo[]> {
 
   // 过滤掉无效数据（停牌、价格为0等）和 ST 股票
   return allStocks.filter(s => s.code && s.price > 0 && s.name && !s.name.includes("ST"));
+}
+
+/**
+ * 腾讯 qt.gtimg.cn 接口（全球可访问，无 Referer 限制）
+ * 海外 Vercel 部署时作为备用数据源
+ */
+async function getAllStocksFromTencent(): Promise<StockInfo[]> {
+  const shList = await fetchTencentBatch("sh");
+  const szList = await fetchTencentBatch("sz");
+  const merged = [...shList, ...szList];
+  return merged.filter(s => s.code && s.price > 0 && s.name && !s.name.includes("ST"));
+}
+
+async function fetchTencentBatch(market: "sh" | "sz"): Promise<StockInfo[]> {
+  // 先尝试从 eastmoney 拿代码列表（如果这一步也失败，就跳过该市场）
+  const allCodes: string[] = [];
+  try {
+    const listUrl = market === "sh"
+      ? "https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=2000&po=1&np=1&fltt=2&invt=2&fid=f3&fs=m:1+t:2,m:1+t:23&fields=f12"
+      : "https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=3000&po=1&np=1&fltt=2&invt=2&fid=f3&fs=m:0+t:6,m:0+t:80&fields=f12";
+
+    const r = await fetch(listUrl, {
+      headers: { "User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/" },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (r.ok) {
+      const d = await r.json();
+      if (d?.data?.diff) {
+        for (const item of d.data.diff) {
+          if (item.f12) allCodes.push(`${market}${item.f12}`);
+        }
+      }
+    }
+  } catch {
+    // 列表拉不到就返回空
+    return [];
+  }
+
+  if (allCodes.length === 0) return [];
+
+  // 腾讯接口一次最多约 80 个，分批
+  const result: StockInfo[] = [];
+  const batchSize = 60;
+  for (let i = 0; i < allCodes.length; i += batchSize) {
+    const batch = allCodes.slice(i, i + batchSize);
+    const url = `https://qt.gtimg.cn/q=${batch.join(",")}`;
+    try {
+      const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      if (!r.ok) continue;
+      const text = await r.text();
+
+      // 解析：v_sh600000="1~名字~代码~...";
+      const lines = text.split(";").filter(l => l.includes("="));
+      for (const line of lines) {
+        const eqIdx = line.indexOf("=");
+        if (eqIdx < 0) continue;
+        const valuePart = line.slice(eqIdx + 1).trim();
+        const match = valuePart.match(/^"(.+)"$/);
+        if (!match) continue;
+        const fields = match[1].split("~");
+        if (fields.length < 50) continue;
+
+        const fullCode = fields[2] || "";
+        const code = fullCode.replace(/^(sh|sz)/, "");
+        result.push({
+          code,
+          name: fields[1] || "",
+          price: Number(fields[3]) || 0,
+          changePercent: Number(fields[32]) || 0,
+          changeAmount: Number(fields[31]) || 0,
+          volume: Number(fields[6]) || 0,
+          amount: 0,
+          turnoverRate: Number(fields[38]) || 0,
+          volumeRatio: Number(fields[49]) || 0,
+          marketCap: Number(fields[45]) * 1e8 || 0,
+          circulationMarketCap: Number(fields[44]) * 1e8 || 0,
+          high: Number(fields[33]) || 0,
+          low: Number(fields[34]) || 0,
+          open: Number(fields[5]) || 0,
+          preClose: Number(fields[4]) || 0,
+          amplitude: 0,
+          peRatio: Number(fields[39]) || 0,
+        });
+      }
+    } catch {
+      // 单批失败继续
+    }
+  }
+
+  return result;
 }
 
 /**

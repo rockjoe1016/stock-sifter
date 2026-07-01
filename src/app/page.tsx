@@ -53,12 +53,19 @@ export default function Home() {
     setError(null);
     try {
       const res = await fetch("/api/scan");
-      const json = await res.json();
+      const text = await res.text();
+      let json: ScanResponse;
+      try {
+        json = JSON.parse(text);
+      } catch {
+        throw new Error(
+          `服务返回了非 JSON 响应（HTTP ${res.status}）。请稍后重试。\n${text.slice(0, 200)}`
+        );
+      }
       if (!json.success) {
         setError(json.error || "筛选失败");
       } else {
         setData(json);
-        // 默认显示有数据的标签
         if (json.totalPassed === 0 && json.totalPartial > 0) {
           setActiveTab("partial");
         } else {
